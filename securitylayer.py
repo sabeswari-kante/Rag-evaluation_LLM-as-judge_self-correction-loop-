@@ -1,19 +1,30 @@
-from detoxify import Detoxify
+
+import os
+# from detoxify import Detoxify
 import re
+import json
 from typing import Dict, List
+from langchain_mistralai import ChatMistralAI
+from langchain_core.messages import HumanMessage
+
 
 class EnhancedLLMGuardrails:
     """Enhanced LLM Guardrails with harmful intent detection"""
     
     def __init__(self):
         print("Initializing guardrails...")
-        self.detoxify = Detoxify('original')
+        self.llm = ChatMistralAI(
+            model="mistral-small-latest",
+            api_key=os.getenv("MISTRAL_API_KEY"),
+            temperature=0.0
+        )
+        # self.detoxify = Detoxify('original')
         print("✓ Toxicity detector loaded")
         
         self.pii_patterns = {
             'email': r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b',
             'phone': r'\b\d{3}[-.]?\d{3}[-.]?\d{4}\b',
-            'ssn': r'\b\d{3}-\d{2}-\d{4}\b',
+            'ssn': r'\b\d{3}-\d{2}-\d{4}\b', 
             'credit_card': r'\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b'
         }
         
@@ -76,23 +87,33 @@ class EnhancedLLMGuardrails:
         
         return {'detected': False}
     
-    def check_toxicity(self, text: str, threshold: float = 0.7) -> tuple:
-        """Check if text contains toxic content"""
-        results = self.detoxify.predict(text)
-        
-        toxic_scores = {
-            'toxicity': results['toxicity'],
-            'severe_toxicity': results['severe_toxicity'],
-            'obscene': results['obscene'],
-            'threat': results['threat'],
-            'insult': results['insult']
-        }
-        
-        for category, score in toxic_scores.items():
-            if score > threshold:
-                return True, category, score
-        
-        return False, None, 0.0
+    def check_toxicity(self, text: str) -> tuple:
+        """Check if text contains toxic content using mistral"""
+        try:
+            prompt = f"""Analyze this text for toxic content. Reply ONLY in this exact JSON format, nothing else:
+                {{"is_toxic": true/false, 
+                "category": "toxicity/threat/insult/obscene/none", 
+                "confidence": 0.0-1.0,
+                 "reason": "brief reason"}}
+
+                Text to analyze: "{text}"
+            """
+
+            results = self.llm.invoke([HumanMessage(content=prompt)])
+            
+            raw = results.content.strip()
+            raw = raw.replace("```json", "").replace("```", "").strip()
+            
+            result = json.loads(raw)
+            
+            if result.get("is_toxic") and result.get("confidence", 0) > 0.7:
+                return True, result.get("category", "toxicity"), result.get("confidence", 0.9)
+            
+            return False, None, 0.0
+    
+        except Exception as e:
+            print(f"⚠ Toxicity check failed: {e} — defaulting to safe")
+            return False, None, 0.0
     
     def detect_pii(self, text: str) -> tuple:
         """Detect and mask PII in text"""
