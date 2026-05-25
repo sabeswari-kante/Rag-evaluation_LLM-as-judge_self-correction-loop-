@@ -1,104 +1,115 @@
 
-from unittest import result
+
 from dotenv import load_dotenv
 load_dotenv()
 import os
 from typing import Any,Dict,List
 from langchain_core.documents import Document
-import certifi
-from langchain_tavily import TavilyCrawl, TavilyExtract, TavilyMap
-import ssl 
-
-# Configure SSL context to use certifi certificates
-ssl_context = ssl.create_default_context(cafile=certifi.where())
-os.environ["SSL_CERT_FILE"] = certifi.where()
-os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
+import os
+import time
+import requests
+from bs4 import BeautifulSoup
+from langchain_community.document_loaders import TextLoader
 
 
+os.makedirs("data", exist_ok=True)
 
-tavily_extract = TavilyExtract()
-tavily_map = TavilyMap(max_depth =5, max_breadth = 20,max_pages = 1000)
-tavily_crawl = TavilyCrawl()
+ESSAYS = {
+    "do_things_that_dont_scale": "http://paulgraham.com/ds.html",
+    "how_to_get_startup_ideas":  "http://paulgraham.com/startupideas.html",
+    "keep_your_identity_small":  "http://paulgraham.com/identity.html",
+}
 
-def tool_crawl():
-    # TEMP DEBUG - remove after
-    map_res = tavily_map.invoke({
-        'url': 'https://python.langchain.com/',
-        'max_depth': 2,
-        'max_breadth': 5,
-        'max_pages': 10,
-    })
-    print("MAP RESPONSE:", map_res)
-    print("MAP KEYS:", map_res.keys() if hasattr(map_res, 'keys') else type(map_res))
-    return []  # stop here for now
-    
-def tool_crawl():
-    print("Step 1: Mapping all URLs...")
-    map_res = tavily_map.invoke({
-        'url': 'https://python.langchain.com/',
-        'max_depth': 5,
-        'max_breadth': 20,
-        'max_pages': 1000,
-    })
 
-    all_urls = map_res.get('results', [])
-    print(f"Found {len(all_urls)} URLs")
+def scrape_essay(url: str) -> str:
+    headers = {"User-Agent": "Mozilla/5.0"}
+    resp = requests.get(url, headers=headers, timeout=10)
+    resp.raise_for_status()
 
-    filtered_urls = [
-        url for url in all_urls
-        if 'python.langchain.com' in url
-        and '%7B' not in url          # remove template URLs like ${CHAT_APP_URL}
-        and '#' not in url
-        and not url.endswith(('.png', '.jpg', '.svg', '.pdf'))
-    ]
-    print(f"Filtered to {len(filtered_urls)} clean URLs")
+    soup = BeautifulSoup(resp.text, "html.parser")
 
-    # content extracting from her in batches  20
-    all_results_data = []
-    batch_size = 20
+    # Paul Graham's site uses <table> layout — extract all meaningful text blocks
+    paragraphs = soup.find_all(["p", "font"])
+    text = "\n\n".join(
+        p.get_text(separator=" ", strip=True)
+        for p in paragraphs
+        if len(p.get_text(strip=True)) > 50
+    )
+    return text
 
-    for i in range(0, len(filtered_urls), batch_size):
-        batch = filtered_urls[i:i + batch_size]
+
+def download_all_essays() -> list[str]:
+    saved_paths = []
+
+    for filename, url in ESSAYS.items():
+        filepath = os.path.join('data', f"{filename}.txt")
+
         try:
-            extract_res = tavily_extract.invoke({
-                'urls': batch,
-                'extract_depth': 'advanced',
-            })
-            all_results_data.extend(extract_res.get('results', []))
-            print(f"Batch {i//batch_size + 1}/{(len(filtered_urls)//batch_size) + 1} done")
+            text = scrape_essay(url)
+
+            if len(text) < 200:
+                print(f"  WARNING: Very short content ({len(text)} chars) — skipping")
+                continue
+
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(text)
+
+            print(f"  Saved → {filepath} ({len(text)} chars)")
+            saved_paths.append(filepath)
+
         except Exception as e:
-            print(f"Batch {i//batch_size + 1} failed: {e}")
-            continue
+            print(f"  ERROR: {e}")
 
-    print('Tavily processing is on going..')
-    # all_results_data = res['results']
-    #to fix deduplicates by content
-    seen_urls= set()
-    seen_fingerprints = set()
-    unique_results = []
-    for result in all_results_data:
-        content = result['raw_content'].strip()
-        url = result.get('url', '')
-        if not content or len(content) < 100:  # empty/small pages
-            continue
-        if url in seen_urls:
-            continue
-        # catches same content, different URL
-        fingerprint = content[:300].lower().replace(" ", "")
-        if fingerprint in seen_fingerprints:
-            continue
+        time.sleep(1)  
 
-        seen_urls.add(url)
-        seen_fingerprints.add(fingerprint)
-        unique_results.append(result)
-    print(f'Deduplicated {len(all_results_data) - len(unique_results)} duplicate results')
+    return saved_paths
 
-    print('SToring metadata-----')
-    all_doc = [Document(page_content= result['raw_content'],metadata={'source':result['url']}) for result in unique_results]
-    # print(all_doc)
-    return all_doc
+
+def load_with_langchain(paths: list[str]) -> list[Document]:
+    documents = []
+
+    for path in paths:
+        try:
+            loader = TextLoader(path, encoding="utf-8")
+            docs = loader.load()
+
+            #  metadata storing
+            for doc in docs:
+                doc.metadata["filename"] = os.path.basename(path)
+                doc.metadata["char_count"] = len(doc.page_content)
+                doc.metadata["word_count"] = len(doc.page_content.split())
+
+            documents.extend(docs)
+            print(f"  LangChain loaded: {os.path.basename(path)} "
+                  f"| {docs[0].metadata['word_count']} words")
+
+        except Exception as e:
+            print(f"  ERROR loading {path}: {e}")
+
+    return documents
+
+
+def print_summary(documents: list[Document]):
+    print("\n" + "="*50)
+    print("DATA DOWNLOAD SUMMARY")
+    print("="*50)
+    total_words = sum(d.metadata["word_count"] for d in documents)
+    total_chars = sum(d.metadata["char_count"] for d in documents)
+
+    for doc in documents:
+        print(f"  {doc.metadata['filename']:<40} "
+              f"{doc.metadata['word_count']:>6} words  "
+              f"{doc.metadata['char_count']:>7} chars")
+
+    print(f"  {'TOTAL':<40} {total_words} words  {total_chars} chars")
+    print('saved')
+
+
 
 if __name__ == "__main__":
-    tool_crawl()
+    saved_paths = download_all_essays()
+    documents = load_with_langchain(saved_paths)
+    print_summary(documents)
+    
 
 

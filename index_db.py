@@ -4,43 +4,39 @@ load_dotenv()
 import os
 from typing import Any,Dict,List
 from langchain_core.documents import Document
-from qdrant_client import QdrantClient
-from qdrant_client.models import ( PointStruct, SparseVector, Distance, VectorParams, SearchParams,
-                                    SparseVectorParams, HnswConfigDiff, SparseIndexParams  )
+from langchain_community.document_loaders import TextLoader
 from langchain_mistralai import MistralAIEmbeddings
-from langchain_community.retrievers import BM25Retriever
 from langchain_experimental.text_splitter import SemanticChunker
-from langchain_qdrant import QdrantVectorStore
-import certifi
-from langchain_tavily import TavilyCrawl, TavilyExtract, TavilyMap
-import ssl 
-from webcrawling import tool_crawl 
+import chromadb
+from langchain_chroma import Chroma
 
-# Configure SSL context to use certifi certificates
-ssl_context = ssl.create_default_context(cafile=certifi.where())
-os.environ["SSL_CERT_FILE"] = certifi.where()
-os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
+CHROMA_DIR       = "chroma_store"
+COLLECTION_NAME  = "New_collection"
+BATCH_SIZE       = 20
 
-# for qdrant 
-COLLECTION_NAME_QDRANT = os.getenv("COLLECTION_NAME_QDRANT")
-QDRANT_URL = os.getenv("QDRANT_URL")
-QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
+def load_documents(folder: str) -> List[Document]:
+    documents = []
+    txt_files = [f for f in os.listdir(folder) if f.endswith(".txt")]
 
-def qdrant_client_init():
-    return QdrantClient(
-    url=QDRANT_URL,
-    api_key=QDRANT_API_KEY)
+    if not txt_files:
+        raise FileNotFoundError(f"No .txt files found in '{folder}'. Run download_data.py first.")
 
-def setup_collection(client: QdrantClient):
-    client.create_collection(
-        collection_name=COLLECTION_NAME_QDRANT,
-        vectors_config=VectorParams(
-                size=1024, distance=Distance.COSINE, 
-                hnsw_config=HnswConfigDiff(m=16, ef_construct=200,)
-                    ,)
-    )
-    print("Collection created.")
+    print(f"Loading {len(txt_files)} files from '{folder}'...")
+    for fname in txt_files:
+        path = os.path.join(folder, fname)
+        try:
+            loader = TextLoader(path, encoding="utf-8")
+            docs = loader.load()
+            for doc in docs:
+                doc.metadata["filename"] = fname
+                doc.metadata["source"]   = fname.replace(".txt", "")
+            documents.extend(docs)
+            print(f"  Loaded: {fname} ({len(docs[0].page_content)} chars)")
+        except Exception as e:
+            print(f"  ERROR loading {fname}: {e}")
 
+    print(f"Total documents loaded: {len(documents)}\n")
+    return documents
 
 def semantic_chunk_documents(documents: List[Document], embeddings) -> List[Document]:
     """
@@ -63,9 +59,9 @@ def semantic_chunk_documents(documents: List[Document], embeddings) -> List[Docu
     return chunks
 
 
-def add_batch(vectorstore,batch, batch_num, total_batches):
+def add_batch(vectorstore: Chroma,batch, batch_num, total_batches):
     try:
-        vectorstore.add_documents(batch)  # sync version (no await)
+        vectorstore.add_documents(batch)  
         print(f"VectorStore Indexing: Successfully added batch {batch_num}/{total_batches} ({len(batch)} documents)")
         return True
     except Exception as e:
@@ -73,39 +69,49 @@ def add_batch(vectorstore,batch, batch_num, total_batches):
         return False
 
 
-def main():
-    print("Hello from demo-sample!")
-    all_documents = tool_crawl()
+def init_chromadb(embeddings) -> Chroma:
+    """
+    Creates  ChromaDB collection.
+    Deletes existing collection if it exists.
+    """
+    print(f"Connecting to ChromaDB at: '{CHROMA_DIR}'")
+    raw_client = chromadb.PersistentClient(path=CHROMA_DIR) #creates new and remove exisiting 
+    existing = [c.name for c in raw_client.list_collections()]
+    if COLLECTION_NAME in existing:
+        raw_client.delete_collection(COLLECTION_NAME)
+        print(f"  Deleted existing collection '{COLLECTION_NAME}' for fresh ingest.")
 
-    embeddings = MistralAIEmbeddings(model="mistral-embed")
-    docs_splitted = semantic_chunk_documents(all_documents, embeddings)
-
-    # qdrant client
-    client = qdrant_client_init()
-    setup_collection(client)
-    print('VectorDB storing.....')
-
-    vectorstore = QdrantVectorStore(
-        client=client,
-        collection_name=COLLECTION_NAME_QDRANT,
-        embedding=embeddings,            
-        vector_name="",    )
-        
-    BATCH_SIZE = 20
-    # add indexing to db
-    batches = [docs_splitted[i : i + BATCH_SIZE]
-        for i in range(0, len(docs_splitted), BATCH_SIZE) ]
-
-    complete_data_batches = [
-        add_batch(vectorstore, batch, i + 1, len(batches))
-        for i, batch in enumerate(batches) ]
-
-    print(f'Completed: {sum(complete_data_batches)}/{len(batches)}')
-
-    count =client.count(COLLECTION_NAME_QDRANT)
-    print(f'Count: {count}')
-    # print(batches)
+    vectorstore = Chroma(
+        collection_name=COLLECTION_NAME,
+        embedding_function=embeddings,
+        persist_directory=CHROMA_DIR,
+        collection_metadata={"hnsw:space": "cosine"},  # cosine similarity
+    )
+    print(f"  Collection '{COLLECTION_NAME}' ready.\n")
     return vectorstore
+
+
+def main():
+    all_documents = load_documents('data')
+    embeddings = MistralAIEmbeddings(model="mistral-embed")
+    print("Semantic chunking...")
+    docs_chunked = semantic_chunk_documents(all_documents, embeddings)
+
+    vectorstore = init_chromadb(embeddings)
+
+    print(f"Indexing {len(docs_chunked)} chunks in batches of {BATCH_SIZE}...")
+    batches = [ docs_chunked[i : i + BATCH_SIZE]
+        for i in range(0, len(docs_chunked), BATCH_SIZE) ]
+
+    results = [ add_batch(vectorstore, batch, i + 1, len(batches))
+        for i, batch in enumerate(batches) ]
+    print(f"\nIndexing : {sum(results)}/{len(batches)} batches added succeeded.")
+
+    count = vectorstore._collection.count()
+    print(f"Total vectors in ChromaDB: {count}")
+
+    return vectorstore
+
 
 
 if __name__ == "__main__":

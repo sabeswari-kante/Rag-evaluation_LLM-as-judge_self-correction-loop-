@@ -3,35 +3,29 @@ import os
 from typing import Any,Dict
 from dotenv import load_dotenv
 load_dotenv()
-
+from evaluation import evaluate_and_correct
 from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
 from langchain.messages import ToolMessage
 from langchain_mistralai import MistralAIEmbeddings
 from langchain_qdrant import QdrantVectorStore
-from qdrant_client import QdrantClient
-from langchain.tools import tool
-
+from langchain.tools import tool 
+from langchain_chroma import Chroma
 from generic_queries import *
 from securitylayer import EnhancedLLMGuardrails, CustomGuardrails
 
 
 embeddings = MistralAIEmbeddings(model="mistral-embed",api_key=os.getenv("MISTRAL_API_KEY")) 
  
-COLLECTION_NAME_QDRANT = os.getenv("COLLECTION_NAME_QDRANT")
-QDRANT_URL = os.getenv("QDRANT_URL")
-QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
+CHROMA_DIR       = "chroma_store"
+COLLECTION_NAME  = "New_collection"
+BATCH_SIZE       = 20
 
-client = QdrantClient(
-    url=QDRANT_URL,
-    api_key=QDRANT_API_KEY) 
-
-
-vectorstore = QdrantVectorStore(
-    client=client,
-    collection_name=COLLECTION_NAME_QDRANT,
-    embedding=embeddings, 
-    vector_name="",)
+vectorstore = Chroma(
+    collection_name=COLLECTION_NAME,
+    embedding_function=embeddings,
+    persist_directory=CHROMA_DIR,
+    collection_metadata={"hnsw:space": "cosine"},)
 
 
 # security layer
@@ -45,10 +39,10 @@ model = init_chat_model("mistral-small-latest",model_provider = 'mistralai')
 @tool(response_format='content_and_artifact')
 def retrieve_content(query:str):
     """
-    Dense semantic retrieval — fetches relevant LangChain documentation chunks
+    Use semantic retrieval — fetches relevant chunks from chromadb. 
     using HNSW-indexed cosine similarity search.
-    Always call this before answering any LangChain question.
-    Relevance retrived helps in final output 
+    Always call this before answering any esays realted question.
+    Use this Relevance retrived helps in final output 
     """
     docs_retrived= vectorstore.as_retriever(search_kwargs={"k": 3}).invoke(query)
 
@@ -87,7 +81,7 @@ def run_llm(query:str, chat_history: list = None) -> Dict[str, Any]:
 
     if injection_check['detected']:
         return {
-            "answer": f"Request blocked: {injection_check['reason']}. I'm designed to help with LangChain documentation only. I can't assist with that kind of request. Try asking something like 'What are LangChain agents?'",
+            "answer": f"Request blocked: {injection_check['reason']}. I'm designed to help with Paul Graham's essays only. I can't assist with that kind of request. Try asking something query",
             "context": [],
             "blocked": True
         }
@@ -96,7 +90,7 @@ def run_llm(query:str, chat_history: list = None) -> Dict[str, Any]:
     input_validation = guardrails.validate_input(query)
     if not input_validation['safe']:
         return {
-            "answer": f"Request blocked: {injection_check['reason']}. I'm designed to help with LangChain documentation only. I can't assist with that kind of request. Try asking something like 'What are LangChain agents?'",
+            "answer": f"Request blocked: {injection_check['reason']}. I'm designed to help with Paul Graham's essays only. I can't assist with that kind of request. Try asking something query",
             "context": [],
             "blocked": True
         }
@@ -105,10 +99,11 @@ def run_llm(query:str, chat_history: list = None) -> Dict[str, Any]:
     safe_query = input_validation['sanitized_input']
 
     system_prompt = (
-        " You are a helpful AI assistant that answers questions about Langchain documentation"
-        "You have access to a hybrid tool that searches for retrived relevant documents"
-        "Use tool to find relevant information before answering questions for the queries realted to langchain."
-        "Always cite the sources you use in your answers."
+        "You are a helpful AI assistant that answers questions based on Paul Graham's essays. "
+        "You have access to a retrieval tool that fetches relevant essay chunks from vector . "
+        "Always call the retrieve_content tool before answering any question. "
+        "Ground your answer strictly in retrieved context. "
+        "Always cite the source essay in your answer. "
         "If you cannot find the answer in the retrived documentation, say so"
     )
 
@@ -155,6 +150,14 @@ def run_llm(query:str, chat_history: list = None) -> Dict[str, Any]:
     }
 
 if __name__ == "__main__":
-    result = run_llm(query='what are deep agents?')
+    result = run_llm(query="What does Paul Graham say about doing things that don't scale?")
     print(result["answer"])
+    eval_result = evaluate_and_correct(
+        query        = query,
+        answer       = rag_result["answer"],
+        context_docs = rag_result["context"],
+    )
 
+    # Always use this — corrected if needed
+    final_answer = eval_result["final_answer"]
+    scores       = eval_result["scores"]
