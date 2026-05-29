@@ -1,0 +1,62 @@
+{
+  "query": "any good suggestion about life philosophy ",
+  "timestamp": "2026-05-29T14:29:41.419450",
+  "context_relevance": {
+    "initial_metric_score": 0.699,
+    "llm_judge_score": 0.5,
+    "status": "triggered_correction_failed",
+    "failure_mode": null,
+    "corrections": [
+      {
+        "round": 1,
+        "methods_used": [
+          "reranking"
+        ],
+        "score_after": 0.699,
+        "improved": false
+      },
+      {
+        "round": 2,
+        "methods_used": [
+          "reranking"
+        ],
+        "score_after": 0.699,
+        "improved": false
+      }
+    ],
+    "final_score": 0.699
+  },
+  "faithfulness": {
+    "initial_metric_score": 1.0,
+    "llm_judge_score": 1.0,
+    "status": "passed",
+    "failure_mode": "none",
+    "corrections": [],
+    "final_score": 1.0
+  },
+  "answer_relevance": {
+    "initial_metric_score": 0.789,
+    "llm_judge_score": null,
+    "status": "passed",
+    "failure_mode": null,
+    "corrections": [],
+    "final_score": 0.789
+  },
+  "confidence_report": {
+    "level": "medium",
+    "message": "Answer is mostly supported — verify critical details.",
+    "flags": [
+      "Context Relevance=0.70 — retrieved chunks may not be fully relevant"
+    ],
+    "scores_summary": {
+      "context_relevance": 0.699,
+      "faithfulness": 1.0,
+      "answer_relevance": 0.789
+    }
+  },
+  "final_answer": "According to Paul Graham's essays, a good life philosophy is to \"Live in the future and build what's missing\" or \"Live in the future and build what seems interesting.\" This means being at the leading edge of a rapidly changing field and paying attention to what's missing or what seems interesting, and then building something to fill that gap. Graham also suggests that the best way to learn about entrepreneurship is by doing it, rather than trying to learn about it in a classroom. He advises college students to spend their time \"ratcheting themselves into the future\" and becoming the sort of person who can have organic startup ideas, rather than trying to learn about the easy part of starting a startup. (Source: \"How to Get Startup Ideas\")",
+  "pipeline_meta": {
+    "any_correction_triggered": true,
+    "any_correction_improved": false
+  }
+}

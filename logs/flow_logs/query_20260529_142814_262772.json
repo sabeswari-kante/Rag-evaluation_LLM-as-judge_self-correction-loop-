@@ -1,0 +1,43 @@
+{
+  "query": "Paul Graham's about startup ideas",
+  "timestamp": "2026-05-29T14:28:14.262699",
+  "context_relevance": {
+    "initial_metric_score": 0.763,
+    "llm_judge_score": null,
+    "status": "passed",
+    "failure_mode": null,
+    "corrections": [],
+    "final_score": 0.763
+  },
+  "faithfulness": {
+    "initial_metric_score": 1.0,
+    "llm_judge_score": 1.0,
+    "status": "passed",
+    "failure_mode": "none",
+    "corrections": [],
+    "final_score": 1.0
+  },
+  "answer_relevance": {
+    "initial_metric_score": 0.785,
+    "llm_judge_score": null,
+    "status": "passed",
+    "failure_mode": null,
+    "corrections": [],
+    "final_score": 0.785
+  },
+  "confidence_report": {
+    "level": "high",
+    "message": "Answer is well-supported by the documentation.",
+    "flags": [],
+    "scores_summary": {
+      "context_relevance": 0.763,
+      "faithfulness": 1.0,
+      "answer_relevance": 0.785
+    }
+  },
+  "final_answer": "According to Paul Graham's essay \"How to Get Startup Ideas\", the key to coming up with good startup ideas is to pay attention to users and notice gaps and anomalies in the world around you. He suggests keeping a journal to record these observations, rather than trying to come up with ideas from scratch. Graham also warns against \"made-up\" or \"sitcom\" startup ideas, which are ideas that sound plausible but are not based on real-world needs or problems. Instead, he recommends taking the time to come up with an idea and being willing to put in the time required to notice the best ideas. As he notes, \"there's comparatively little competition for the best ideas, because few founders are willing to put in the time required to notice them.\" (Source: \"How to Get Startup Ideas\")",
+  "pipeline_meta": {
+    "any_correction_triggered": false,
+    "any_correction_improved": false
+  }
+}

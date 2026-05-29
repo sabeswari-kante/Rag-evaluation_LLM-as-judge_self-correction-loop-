@@ -1,9 +1,12 @@
 from typing import Any, Dict, List
-import os, uuid
+import os
+import uuid
 import streamlit as st
+
 from core import run_llm
 from evaluation import evaluate_and_correct
 
+# ── session state init ────────────────────────────────────────────────────────
 if "sessions" not in st.session_state:
     st.session_state.sessions = {}
 
@@ -13,34 +16,39 @@ if "current_session_id" not in st.session_state:
 if "messages" not in st.session_state:
     st.session_state.messages = [
         {
-            "role": "assistant",
-            "content": "Ask me anything about Paul Graham's essays. I'll retrieve relevant context, cite sources, and show evaluation scores.",
+            "role":    "assistant",
+            "content": (
+                "Ask me anything about Paul Graham Essays. "
+                "I'll retrieve relevant context, cite sources, and show evaluation scores."
+            ),
             "sources": [],
         }
     ]
 
 if "metrics" not in st.session_state:
     st.session_state.metrics = {
-        "total_checks": 0,
+        "total_checks":              0,
         "prompt_injections_blocked": 0,
-        "harmful_intent_blocked": 0,
-        "corrections_triggered": 0,
+        "harmful_intent_blocked":    0,
+        "corrections_triggered":     0,
     }
 
 if "eval_logs" not in st.session_state:
-    st.session_state.eval_logs = []   # stores per-query eval results
+    st.session_state.eval_logs = []
 
+# ── page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Paul Graham Essays RAG",
-    page_icon="📝",
-    layout="centered"
+    page_icon="🤷‍♂️",
+    layout="centered",
 )
-st.title("📝 Paul Graham Essays — RAG Q&A")
-st.caption("Answers grounded in: *Do Things That Don't Scale · How to Get Startup Ideas · Keep Your Identity Small*")
+st.title(" Paul Graham Essays  — RAG Q&A")
+st.caption("Answers grounded in Paul Graham Essays with self-correcting evaluation.")
 
+
+#  helpers 
 def _format_sources(context_docs: List[Any]) -> List[str]:
-    seen = set()
-    sources = []
+    seen, sources = set(), []
     for doc in (context_docs or []):
         meta = getattr(doc, "metadata", {}) or {}
         src  = str(meta.get("source") or meta.get("filename") or "Unknown")
@@ -49,6 +57,7 @@ def _format_sources(context_docs: List[Any]) -> List[str]:
             sources.append(src)
     return sources
 
+
 def _agent_history() -> List[Dict]:
     return [
         {"role": m["role"], "content": m["content"]}
@@ -56,59 +65,141 @@ def _agent_history() -> List[Dict]:
         if m["role"] in ("user", "assistant") and m.get("content")
     ]
 
+
 def _score_color(score: float) -> str:
-    if score >= 0.75:
+    if score >= 0.7:
         return "🟢"
-    elif score >= 0.5:
+    elif score >= 0.4:
         return "🟡"
     else:
         return "🔴"
 
-def _render_eval_scores(eval_result: Dict):
-    """Renders RAG Triad scores as a compact expander."""
-    scores               = eval_result.get("scores", {})
-    correction_triggered = eval_result.get("correction_triggered", False)
-    correction_attempts  = eval_result.get("correction_attempts", 0)
 
-    with st.expander("📊 RAG Evaluation Scores", expanded=False):
+def _confidence_color(level: str) -> str:
+    return {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(level, "⚪")
+
+
+def _render_correction_detail(log: Dict, metric_name: str):
+    """Renders per-round correction detail inside an expander."""
+    corrections = log.get("corrections", [])
+    if not corrections:
+        return
+    for c in corrections:
+        improved_icon = "✅" if c.get("improved") else "➡️"
+        st.caption(
+            f"Round {c['round']} — {', '.join(c['methods_used'])} "
+            f"→ score {c['score_after']:.2f} {improved_icon}"
+        )
+
+
+def _render_eval_scores(eval_result: Dict):
+    """Renders the full evaluation panel — confidence + per-metric scores."""
+    scores      = eval_result.get("scores", {})
+    confidence  = eval_result.get("confidence", {})
+    any_correct = eval_result.get("correction_triggered", False)
+    total_rnds  = eval_result.get("total_correction_rounds", 0)
+    log_file    = eval_result.get("log_file", "")
+
+    with st.expander("📊 RAG Evaluation — Scores & Self-Correction", expanded=False):
+
+        # confidence banner
+        conf_level   = confidence.get("level", "unknown")
+        conf_message = confidence.get("message", "")
+        conf_flags   = confidence.get("flags", [])
+        conf_icon    = _confidence_color(conf_level)
+
+        if conf_level == "high":
+            st.success(f"{conf_icon} **Confidence: HIGH** — {conf_message}")
+        elif conf_level == "medium":
+            st.warning(f"{conf_icon} **Confidence: MEDIUM** — {conf_message}")
+        else:
+            st.error(f"{conf_icon} **Confidence: LOW** — {conf_message}")
+
+        if conf_flags:
+            for flag in conf_flags:
+                st.caption(f"⚠️ {flag}")
+
+        st.divider()
+
+        # per-metric columns 
         col1, col2, col3 = st.columns(3)
 
-        faith  = scores.get("faithfulness",      {})
-        ans    = scores.get("answer_relevancy",  {})
-        ctx    = scores.get("context_precision", {})
+        cr = scores.get("context_relevance", {})
+        fa = scores.get("faithfulness", {})
+        ar = scores.get("answer_relevance", {})
+
+        cr_score = cr.get("score", 0.0)
+        fa_score = fa.get("score", 0.0)
+        ar_score = ar.get("score", 0.0)
+
+        cr_log = cr.get("log", {})
+        fa_log = fa.get("log", {})
+        ar_log = ar.get("log", {})
 
         with col1:
-            f_score = faith.get("score", 0.0)
-            st.metric("Faithfulness", f"{f_score:.2f}", help="Is the answer grounded in the retrieved context?")
-            st.caption(f"{_score_color(f_score)} {faith.get('source','').upper()}")
-            if faith.get("reason"):
-                st.caption(faith["reason"])
+            st.metric(
+                "Context Relevance",
+                f"{cr_score:.2f}",
+                help="Are the retrieved chunks relevant to the query? (Cosine similarity + LLM judge)",
+            )
+            st.caption(f"{_score_color(cr_score)} Status: {cr_log.get('status','—')}")
+            init = cr_log.get("initial_metric_score")
+            if init is not None:
+                st.caption(f"Initial cosine: {init:.2f}")
+            judge = cr_log.get("llm_judge_score")
+            if judge is not None:
+                st.caption(f"LLM judge:      {judge:.2f}")
+            _render_correction_detail(cr_log, "Context Relevance")
 
         with col2:
-            a_score = ans.get("score", 0.0)
-            st.metric("Answer Relevancy", f"{a_score:.2f}", help="Does the answer address the query?")
-            st.caption(f"{_score_color(a_score)} {ans.get('source','').upper()}")
-            if ans.get("reason"):
-                st.caption(ans["reason"])
+            st.metric(
+                "Faithfulness",
+                f"{fa_score:.2f}",
+                help="Is the answer grounded in retrieved context? (LLM judge with claim verification)",
+            )
+            st.caption(f"{_score_color(fa_score)} Status: {fa_log.get('status','—')}")
+            fm = fa_log.get("failure_mode")
+            if fm and fm != "none":
+                st.caption(f"Failure mode: {fm}")
+            init = fa_log.get("initial_metric_score")
+            if init is not None:
+                st.caption(f"Initial judge: {init:.2f}")
+            _render_correction_detail(fa_log, "Faithfulness")
 
         with col3:
-            c_score = ctx.get("score", 0.0)
-            st.metric("Context Precision", f"{c_score:.2f}", help="Did the retriever find the right chunks?")
-            st.caption(f"{_score_color(c_score)} {ctx.get('source','').upper()}")
-            if ctx.get("reason"):
-                st.caption(ctx["reason"])
+            st.metric(
+                "Answer Relevance",
+                f"{ar_score:.2f}",
+                help="Does the answer fully address the query? (Cosine similarity + aspect decomposition)",
+            )
+            st.caption(f"{_score_color(ar_score)} Status: {ar_log.get('status','—')}")
+            init = ar_log.get("initial_metric_score")
+            if init is not None:
+                st.caption(f"Initial cosine: {init:.2f}")
+            judge = ar_log.get("llm_judge_score")
+            if judge is not None:
+                st.caption(f"LLM judge:      {judge:.2f}")
+            _render_correction_detail(ar_log, "Answer Relevance")
 
-        if correction_triggered:
+        st.divider()
+
+        #  correction summary 
+        if any_correct:
             st.warning(
-                f"Self-correction triggered — "
-                f"{correction_attempts} round(s) ran to fix low faithfulness."
+                f"Self-correction ran — {total_rnds} correction round(s) across all metrics."
             )
         else:
             st.success("No self-correction needed.")
 
+        #  log file path 
+        if log_file:
+            st.caption(f"📁 Log saved → `{log_file}`")
+
+
+# side bars 
+
 with st.sidebar:
 
-    # Session controls
     st.subheader("Session")
     col1, col2 = st.columns(2)
 
@@ -116,8 +207,8 @@ with st.sidebar:
         if st.button("Clear chat", use_container_width=True):
             st.session_state.messages = [
                 {
-                    "role": "assistant",
-                    "content": "Chat cleared. Ask me anything about Paul Graham's essays.",
+                    "role":    "assistant",
+                    "content": "Chat cleared. Ask me anything about Paul Graham Essays.",
                     "sources": [],
                 }
             ]
@@ -130,8 +221,8 @@ with st.sidebar:
             st.session_state.current_session_id = str(uuid.uuid4())
             st.session_state.messages = [
                 {
-                    "role": "assistant",
-                    "content": "New conversation started. Ask me anything about Paul Graham's essays!",
+                    "role":    "assistant",
+                    "content": "New conversation started. Ask me anything about Paul Graham Essays!",
                     "sources": [],
                 }
             ]
@@ -150,38 +241,47 @@ with st.sidebar:
                 st.session_state.messages = msgs
                 st.rerun()
 
-    # Security metrics
     st.divider()
     st.subheader("Security Metrics")
     m = st.session_state.metrics
-    st.caption(f"Total checks         : {m['total_checks']}")
-    st.caption(f"Injections blocked   : {m['prompt_injections_blocked']}")
-    st.caption(f"Harmful intent blocked: {m['harmful_intent_blocked']}")
-    st.caption(f"Self-corrections ran : {m['corrections_triggered']}")
+    st.caption(f"Total checks             : {m['total_checks']}")
+    st.caption(f"Injections blocked       : {m['prompt_injections_blocked']}")
+    st.caption(f"Harmful intent blocked   : {m['harmful_intent_blocked']}")
+    st.caption(f"Self-corrections ran     : {m['corrections_triggered']}")
 
-    # Eval log
     st.divider()
     st.subheader("📋 Eval Log")
+
     if st.button("Clear eval log", use_container_width=True):
         st.session_state.eval_logs = []
         st.rerun()
 
     if st.session_state.eval_logs:
         st.caption(f"{len(st.session_state.eval_logs)} queries evaluated")
-        for i, log in enumerate(reversed(st.session_state.eval_logs)):
-            scores = log.get("scores", {})
-            f = scores.get("faithfulness",     {}).get("score", 0.0)
-            a = scores.get("answer_relevancy", {}).get("score", 0.0)
-            c = scores.get("context_precision",{}).get("score", 0.0)
-            corrected = "⚠️" if log.get("correction_triggered") else "✅"
-            with st.expander(f"{corrected} Q{len(st.session_state.eval_logs)-i}: {log['query'][:40]}…"):
-                st.caption(f"Faithfulness     : {f:.2f} {_score_color(f)}")
-                st.caption(f"Answer Relevancy : {a:.2f} {_score_color(a)}")
-                st.caption(f"Context Precision: {c:.2f} {_score_color(c)}")
-                if log.get("correction_triggered"):
-                    st.caption(f"Correction rounds: {log.get('correction_attempts')}")
+        for i, log_entry in enumerate(reversed(st.session_state.eval_logs)):
+            scores     = log_entry.get("scores", {})
+            cr = scores.get("context_relevance", {}).get("score", 0.0)
+            fa = scores.get("faithfulness",      {}).get("score", 0.0)
+            ar = scores.get("answer_relevance",  {}).get("score", 0.0)
+            conf     = log_entry.get("confidence", {}).get("level", "?")
+            corrected = "⚠️" if log_entry.get("correction_triggered") else "✅"
+            q_label  = log_entry["query"][:40]
+            idx      = len(st.session_state.eval_logs) - i
+
+            with st.expander(f"{corrected} Q{idx}: {q_label}…"):
+                st.caption(f"Confidence        : {_confidence_color(conf)} {conf.upper()}")
+                st.caption(f"Context Relevance : {cr:.2f} {_score_color(cr)}")
+                st.caption(f"Faithfulness      : {fa:.2f} {_score_color(fa)}")
+                st.caption(f"Answer Relevance  : {ar:.2f} {_score_color(ar)}")
+                if log_entry.get("correction_triggered"):
+                    st.caption(f"Correction rounds : {log_entry.get('total_correction_rounds', 0)}")
+                if log_entry.get("log_file"):
+                    st.caption(f"Log → `{log_entry['log_file']}`")
     else:
         st.caption("No evaluations yet.")
+
+
+# chat history 
 
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
@@ -193,7 +293,10 @@ for msg in st.session_state.messages:
         if msg.get("eval_result"):
             _render_eval_scores(msg["eval_result"])
 
-prompt = st.chat_input("Ask about Paul Graham's essays…")
+
+# query inputs
+
+prompt = st.chat_input("Ask about Paul Graham Essays")
 
 if prompt:
     st.session_state.messages.append({"role": "user", "content": prompt, "sources": []})
@@ -202,15 +305,15 @@ if prompt:
 
     with st.chat_message("assistant"):
         try:
-            # Step 1: RAG
+            # Step 1 — RAG retrieval + generation
             with st.spinner("Retrieving context…"):
                 result: Dict[str, Any] = run_llm(prompt, chat_history=_agent_history())
 
             st.session_state.metrics["total_checks"] += 1
 
-            # Step 2: Blocked response
+            # Blocked response
             if result.get("blocked"):
-                answer_text = result.get("answer", "Request blocked by security layer.")
+                answer_text = result.get("answer", "Request blocked.")
                 if "injection" in answer_text.lower():
                     st.session_state.metrics["prompt_injections_blocked"] += 1
                 else:
@@ -224,45 +327,68 @@ if prompt:
                     "blocked": True,
                 })
 
-            # Step 3: Safe response → evaluate
+            # Safe response — evaluate + self-correct
+            
             else:
-                with st.spinner("Evaluating answer quality…"):
-                    eval_result = evaluate_and_correct(
-                        query        = prompt,
-                        answer       = result["answer"],
-                        context_docs = result["context"],
+                # If context is empty, generic reply — skip evaluation entirely
+                if not result.get("context"):
+                    generic_answer = result["answer"]
+                    st.markdown(generic_answer)
+                    st.session_state.messages.append({
+                        "role":    "assistant",
+                        "content": generic_answer,
+                        "sources": [],
+                        "blocked": False,
+                    })
+                else:
+                    with st.spinner("Evaluating and self-correcting if needed…"):
+                        eval_result = evaluate_and_correct(
+                            query        = prompt,
+                            answer       = result["answer"],
+                            context_docs = result["context"],
+                        )
+
+                    if eval_result.get("correction_triggered"):
+                        st.session_state.metrics["corrections_triggered"] += 1
+
+                    final_answer = eval_result["final_answer"]
+                    sources      = _format_sources(result.get("context", []))
+                    confidence   = eval_result.get("confidence", {})
+
+                    conf_level = confidence.get("level", "unknown")
+                    conf_icon  = _confidence_color(conf_level)
+                    st.caption(
+                        f"{conf_icon} **Confidence: {conf_level.upper()}** — "
+                        f"{confidence.get('message', '')}"
                     )
 
-                if eval_result.get("correction_triggered"):
-                    st.session_state.metrics["corrections_triggered"] += 1
+                    st.markdown(final_answer)
 
-                final_answer = eval_result["final_answer"]
-                sources      = _format_sources(result.get("context", []))
+                    if sources:
+                        with st.expander("📄 Sources"):
+                            for s in sources:
+                                st.markdown(f"- `{s}`")
 
-                st.markdown(final_answer)
+                    _render_eval_scores(eval_result)
 
-                if sources:
-                    with st.expander("📄 Sources"):
-                        for s in sources:
-                            st.markdown(f"- `{s}`")
+                    st.session_state.eval_logs.append({
+                        "query":                   prompt,
+                        "scores":                  eval_result["scores"],
+                        "confidence":              eval_result["confidence"],
+                        "correction_triggered":    eval_result["correction_triggered"],
+                        "total_correction_rounds": eval_result.get("total_correction_rounds", 0),
+                        "log_file":                eval_result.get("log_file", ""),
+                    })
 
-                _render_eval_scores(eval_result)
+                    st.session_state.messages.append({
+                        "role":        "assistant",
+                        "content":     final_answer,
+                        "sources":     sources,
+                        "blocked":     False,
+                        "eval_result": eval_result,
+                    })
 
-                # Log to sidebar eval log
-                st.session_state.eval_logs.append({
-                    "query":                prompt,
-                    "scores":               eval_result["scores"],
-                    "correction_triggered": eval_result["correction_triggered"],
-                    "correction_attempts":  eval_result["correction_attempts"],
-                })
 
-                st.session_state.messages.append({
-                    "role":        "assistant",
-                    "content":     final_answer,
-                    "sources":     sources,
-                    "blocked":     False,
-                    "eval_result": eval_result,
-                })
 
         except Exception as e:
             st.error("Failed to generate a response.")

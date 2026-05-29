@@ -1,0 +1,43 @@
+{
+  "query": "What advice does Paul Graham give about doing things that don't scale?",
+  "timestamp": "2026-05-29T13:49:23.329692",
+  "context_relevance": {
+    "initial_metric_score": 0.818,
+    "llm_judge_score": null,
+    "status": "passed",
+    "failure_mode": null,
+    "corrections": [],
+    "final_score": 0.818
+  },
+  "faithfulness": {
+    "initial_metric_score": 1.0,
+    "llm_judge_score": 1.0,
+    "status": "passed",
+    "failure_mode": "none",
+    "corrections": [],
+    "final_score": 1.0
+  },
+  "answer_relevance": {
+    "initial_metric_score": 0.888,
+    "llm_judge_score": null,
+    "status": "passed",
+    "failure_mode": null,
+    "corrections": [],
+    "final_score": 0.888
+  },
+  "confidence_report": {
+    "level": "high",
+    "message": "Answer is well-supported by the documentation.",
+    "flags": [],
+    "scores_summary": {
+      "context_relevance": 0.818,
+      "faithfulness": 1.0,
+      "answer_relevance": 0.888
+    }
+  },
+  "final_answer": "Paul Graham advises doing things that don't scale, as stated in the document 'do_things_that_dont_scale'. He suggests that startups should focus on making an extraordinary effort initially, rather than relying on a big launch or partner to get users. This includes recruiting users manually and giving them an overwhelmingly good experience. Graham believes that the unscalable things you have to do to get started can change the company permanently for the better, and that working hard in two dimensions (building the product and doing unscalable things) is necessary for success. He also notes that treating startups as vectors, with two components (what you're going to build and the unscalable thing(s) you're going to do initially), can be a useful way to think about startup ideas. Source: 'do_things_that_dont_scale' by Paul Graham.",
+  "pipeline_meta": {
+    "any_correction_triggered": false,
+    "any_correction_improved": false
+  }
+}
